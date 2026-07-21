@@ -18,6 +18,7 @@
  */
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
 const { spawn } = require('child_process');
 const { exists } = require('./fs');
 const { DIST_ROOT } = require('./paths');
@@ -65,6 +66,49 @@ function readResourcePressure() {
 	readFirst('/sys/fs/cgroup/memory.current', /./);
 
 	return lines;
+}
+
+/**
+ * Try a bare TCP connect to one address, so we learn what a client would see.
+ *
+ * @param {string} host
+ * @param {number} port
+ * @param {number} family 4 or 6
+ * @returns {Promise<string>} 'connected', or the failing errno (e.g. ECONNREFUSED)
+ */
+function probeAddress(host, port, family) {
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (result) => {
+			if (settled) return;
+			settled = true;
+			socket.destroy();
+			resolve(result);
+		};
+		const socket = net.connect({ host, port, family });
+		socket.setTimeout(2000);
+		socket.once('connect', () => finish('connected'));
+		socket.once('timeout', () => finish('timeout'));
+		socket.once('error', (err) => finish(err.code || 'error'));
+	});
+}
+
+/**
+ * Verify the port the server just advertised is actually reachable the way a
+ * client will reach it, over both address families.
+ *
+ * The server binds whatever `--host` resolves to, and that default is the *name*
+ * `localhost` - so in an environment where localhost prefers IPv6 the listener
+ * can end up on ::1 while Node's client dials 127.0.0.1 and gets an instant
+ * ECONNREFUSED from a perfectly healthy server. That failure is otherwise
+ * indistinguishable from "the server died", so measure it rather than infer it.
+ *
+ * @param {number} port
+ * @returns {Promise<{ipv4: string, ipv6: string, reachable: boolean}>}
+ */
+async function probeReachability(port) {
+	const [ipv4, ipv6] = await Promise.all([probeAddress('127.0.0.1', port, 4), probeAddress('::1', port, 6)]);
+	return { ipv4, ipv6, reachable: ipv4 === 'connected' || ipv6 === 'connected' };
 }
 
 /**
@@ -138,8 +182,16 @@ async function startServer(options) {
 	// --port=0 lets the OS assign a free port; we parse the actual port from
 	// Uvicorn's stdout to avoid the race between findFreePort() releasing the
 	// port and the engine binding to it (same pattern as engine-manager.ts).
+	// --host=127.0.0.1 is deliberate: never bind the *name* 'localhost'. In a
+	// container (and anywhere localhost resolves to both ::1 and 127.0.0.1)
+	// asyncio binds one socket per address family, and with --port=0 each socket
+	// gets a *different* ephemeral port - while only the first socket's port is
+	// logged. We then parse that port and hand it to the tests, which dial
+	// 127.0.0.1 and get an instant ECONNREFUSED because IPv4 is listening on the
+	// other port. Which family sorts first varies per getaddrinfo call, which is
+	// what made this flaky rather than constant.
 	const scriptArgs = script.split(/\s+/);
-	const serverArgs = ['--autoterm', ...scriptArgs, '--port=0', ...args];
+	const serverArgs = ['--autoterm', ...scriptArgs, '--host=127.0.0.1', '--port=0', ...args];
 	if (basePort) {
 		serverArgs.push(`--base_port=${basePort}`);
 	}
@@ -208,7 +260,24 @@ async function startServer(options) {
 			if (!resolved && actualPort && outputBuffer.includes(READY_MESSAGE)) {
 				resolved = true;
 				diagnostics.port = actualPort;
-				resolve({ server: serverProcess, port: actualPort, diagnostics });
+
+				// The server says it's listening; confirm it before handing the port
+				// to tests. "Ready but unreachable" otherwise shows up only as every
+				// client connection being refused, far from the cause.
+				probeReachability(actualPort).then((reach) => {
+					diagnostics.reachability = reach;
+
+					if (!reach.reachable) {
+						console.error(['', '='.repeat(78), `SERVER READY BUT UNREACHABLE on port ${actualPort} (${script})`, `  IPv4 127.0.0.1:${actualPort} -> ${reach.ipv4}`, `  IPv6      [::1]:${actualPort} -> ${reach.ipv6}`, '  The process is alive and reported startup, but nothing accepts', '  connections. Every client dial will fail with ECONNREFUSED.', `  Last ${Math.min(diagnostics.outputTail.length, 40)} line(s) of server output:`, ...diagnostics.outputTail.slice(-40).map((l) => `    ${l}`), '='.repeat(78), ''].join('\n'));
+					} else if (reach.ipv4 !== 'connected') {
+						// Reachable over IPv6 but NOT IPv4. Clients here dial 127.0.0.1,
+						// so this is the asymmetry that actually bites. IPv4-only is the
+						// normal healthy case and is deliberately silent.
+						console.error(`[server] WARNING: port ${actualPort} is reachable over IPv6 but NOT IPv4 (IPv4=${reach.ipv4}). Clients dialing 127.0.0.1 will get ECONNREFUSED.`);
+					}
+
+					resolve({ server: serverProcess, port: actualPort, diagnostics });
+				});
 			}
 		};
 
