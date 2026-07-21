@@ -182,14 +182,13 @@ async function startServer(options) {
 	// --port=0 lets the OS assign a free port; we parse the actual port from
 	// Uvicorn's stdout to avoid the race between findFreePort() releasing the
 	// port and the engine binding to it (same pattern as engine-manager.ts).
-	// --host=127.0.0.1 is deliberate: never bind the *name* 'localhost'. In a
-	// container (and anywhere localhost resolves to both ::1 and 127.0.0.1)
-	// asyncio binds one socket per address family, and with --port=0 each socket
-	// gets a *different* ephemeral port - while only the first socket's port is
-	// logged. We then parse that port and hand it to the tests, which dial
-	// 127.0.0.1 and get an instant ECONNREFUSED because IPv4 is listening on the
-	// other port. Which family sorts first varies per getaddrinfo call, which is
-	// what made this flaky rather than constant.
+	// --host=127.0.0.1 is deliberate: never bind the *name* 'localhost'. Where it
+	// resolves to both ::1 and 127.0.0.1 (any container - a bare host usually maps
+	// only IPv4), asyncio binds one socket per address family and --port=0 gives
+	// each its own ephemeral port, while only the first socket's port is logged.
+	// We parse that port and hand it to the tests, so whenever IPv6 sorts first
+	// the tests dial a port nothing listens on over IPv4 and every request fails
+	// with ECONNREFUSED against a healthy engine.
 	const scriptArgs = script.split(/\s+/);
 	const serverArgs = ['--autoterm', ...scriptArgs, '--host=127.0.0.1', '--port=0', ...args];
 	if (basePort) {
