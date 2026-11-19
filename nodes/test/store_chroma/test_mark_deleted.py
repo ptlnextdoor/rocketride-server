@@ -27,15 +27,16 @@ from .test_convert_filter_explicit_none import _load_store_class
 
 
 class _FakeCollection:
-    """A chromadb Collection reduced to what markDeleted/markActive and count_documents call.
+    """A chromadb Collection reduced to what markDeleted/markActive, count_documents and render call.
 
     ``get`` answers like the client: one dict of parallel lists. ``update``
     takes ids with their new metadatas; there is no update by filter.
     ``count`` returns the number of records, as the server does.
     """
 
-    def __init__(self, rows):
+    def __init__(self, rows, documents=None):
         self.rows = {row_id: dict(meta) for row_id, meta in rows.items()}
+        self.documents = documents or {}
         self.get_calls = []
         self.update_calls = []
 
@@ -53,6 +54,10 @@ class _FakeCollection:
                 return meta.get(field) in condition['$in']
             if '$ne' in condition:
                 return meta.get(field) != condition['$ne']  # an absent key is not equal, as in Chroma
+            if '$gte' in condition:
+                return meta.get(field) >= condition['$gte']
+            if '$lt' in condition:
+                return meta.get(field) < condition['$lt']
             return meta.get(field) == condition['$eq']
 
         hits = [(row_id, meta) for row_id, meta in self.rows.items() if matches(meta, where)]
@@ -63,7 +68,9 @@ class _FakeCollection:
             'ids': [row_id for row_id, _ in hits],
             'metadatas': [dict(meta) for _, meta in hits] if include is None or 'metadatas' in include else None,
             'embeddings': None,
-            'documents': None,
+            'documents': [self.documents.get(row_id) for row_id, _ in hits]
+            if include is None or 'documents' in include
+            else None,
             'uris': None,
             'data': None,
             'included': list(include or []),

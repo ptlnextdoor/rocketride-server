@@ -801,7 +801,9 @@ class Store(DocumentStoreBase):
                     },
                 ]
             }
-            results = self.collectionObj.get(where=filter, include=['documents'], limit=self.renderChunkSize)
+            results = self.collectionObj.get(
+                where=filter, include=['documents', 'metadatas'], limit=self.renderChunkSize
+            )
             # Create a renderChunkSize array with empty
             # entries. This will allow us to join even when
             # a chunk doesn't come back
@@ -811,7 +813,7 @@ class Store(DocumentStoreBase):
                 # Get the info
                 metadata = results['metadatas'][i]
                 content = results['documents'][i]
-                chunk = metadata.chunkId
+                chunk = metadata['chunkId']
 
                 # Should never happen since we gave it an offset
                 if chunk < offset:
