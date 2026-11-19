@@ -46,6 +46,7 @@ from .constants import (
     DEFAULT_SCROLL,
     DEFAULT_TEXT_BATCH_SIZE,
     ELASTICSEARCH_DEFAULT_PORT,
+    MAX_RESULT_WINDOW,
 )
 
 
@@ -667,8 +668,10 @@ class Store(DocumentStoreBase):
 
         # Since chunks are returned in any order, and a single objectId
         # may contain tens of thousands of chunks, we grab them one
-        # group at a time (renderChunkSize), put them into an array,
-        # join them and call the callback
+        # window at a time, put them into an array, join them and call
+        # the callback. A window is at most MAX_RESULT_WINDOW chunks,
+        # the largest page Elasticsearch returns by default
+        window = min(self.renderChunkSize, MAX_RESULT_WINDOW)
         offset = 0
         while True:
             # Build query for getting a set of chunks
@@ -677,11 +680,11 @@ class Store(DocumentStoreBase):
                     'bool': {
                         'must': [
                             {'term': {'meta.objectId': objectId}},
-                            {'range': {'meta.chunkId': {'gte': offset, 'lt': offset + self.renderChunkSize}}},
+                            {'range': {'meta.chunkId': {'gte': offset, 'lt': offset + window}}},
                         ]
                     }
                 },
-                'size': self.renderChunkSize,
+                'size': window,
                 'sort': [{'meta.chunkId': {'order': 'asc'}}],
                 '_source': [CONTENT_FIELD, 'meta.chunkId'],
             }
@@ -690,10 +693,10 @@ class Store(DocumentStoreBase):
             response = self.client.search(index=self.index, body=search_body)
             hits = response.get('hits', {}).get('hits', [])
 
-            # Create a renderChunkSize array with empty
+            # Create a window-sized array with empty
             # entries. This will allow us to join even when
             # a chunk doesn't come back
-            text: List[str] = [''] * self.renderChunkSize
+            text: List[str] = [''] * window
             lastIndex = -1
 
             # Now, add the documents to the results
@@ -713,7 +716,7 @@ class Store(DocumentStoreBase):
                     continue
 
                 # Should never happen since we gave it a range
-                if chunk >= offset + self.renderChunkSize:
+                if chunk >= offset + window:
                     continue
 
                 # Get the index into the array
@@ -740,10 +743,10 @@ class Store(DocumentStoreBase):
             callback(fullText)
 
             # If we got less than we asked for, must be done
-            if numberOfItems < self.renderChunkSize:
+            if numberOfItems < window:
                 break
 
-            offset += self.renderChunkSize
+            offset += window
 
     # -------------------------------------------------------------------------
     # Text/Index mode (BM25, no embeddings)

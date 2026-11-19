@@ -37,6 +37,9 @@ DEFAULT_TEXT_BATCH_SIZE = 500
 ELASTICSEARCH_DEFAULT_PORT = 9200
 """Default Elasticsearch port (self-managed)."""
 
+MAX_RESULT_WINDOW = 10000
+"""Default Elasticsearch index.max_result_window, the largest from + size that one search accepts."""
+
 # -----------------------------------------------------------------------------
 # Backend and mode identifiers (used in config and IGlobal)
 # -----------------------------------------------------------------------------
