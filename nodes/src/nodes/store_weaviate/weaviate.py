@@ -60,6 +60,11 @@ _REPEAT_PAUSE_SECONDS = 1.0
 # How many such pages in a row a trash update tolerates before it fails.
 _MAX_STALLS = 2
 
+# How many chunk ids one render query covers. A query without a limit returns
+# QUERY_DEFAULTS_LIMIT objects (10 by default), and Weaviate rejects a limit
+# above QUERY_MAXIMUM_RESULTS (10000 by default).
+_RENDER_WINDOW = 1000
+
 
 class Store(DocumentStoreBase):
     apikey: str | None = None
@@ -609,8 +614,9 @@ class Store(DocumentStoreBase):
 
         # Since chunks are returned in any order, and a single objectId
         # may contain tens of thousands of chunks, we grave them one
-        # group at a time (renderChunkSize), put them into an array,
+        # group at a time (window), put them into an array,
         # join them and call the callback
+        window = min(self.renderChunkSize, _RENDER_WINDOW)
         offset = 0
         while True:
             # Build filter for getting a set of chunks within the offset range
@@ -618,15 +624,16 @@ class Store(DocumentStoreBase):
                 filters=(
                     Filter.by_property('objectId').equal(objectId)
                     & Filter.by_property('chunkId').greater_or_equal(offset)
-                    & Filter.by_property('chunkId').less_than(offset + self.renderChunkSize)
-                )
+                    & Filter.by_property('chunkId').less_than(offset + window)
+                ),
+                limit=window,
             )
 
-            # Create a renderChunkSize array with empty
+            # Create a window-sized array with empty
             # entries. This will allow us to join even when
             # a chunk doesn't come back
             # Process the results
-            text = [''] * self.renderChunkSize
+            text = [''] * window
             lastIndex = -1
 
             for point in points.objects:
@@ -656,7 +663,7 @@ class Store(DocumentStoreBase):
             callback(fullText)
 
             # If we got less than we asked for, must be done
-            if numberOfItems < self.renderChunkSize:
+            if numberOfItems < window:
                 break
 
-            offset += self.renderChunkSize
+            offset += window

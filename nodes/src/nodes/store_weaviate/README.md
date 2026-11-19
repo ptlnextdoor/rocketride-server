@@ -111,7 +111,7 @@ scoped at query time without using collection names as routine access filters.
 
 ### Rendering
 
-Rendering retrieves an object's chunks in `chunkId` order and sends joined text to the callback in `renderChunkSize` groups. The node's document count is a count of stored vectors (chunks).
+Rendering retrieves an object's chunks in `chunkId` order and sends joined text to the callback in groups of `renderChunkSize` chunks, at most 1000 per group. The node's document count is a count of stored vectors (chunks).
 
 When a batch holds an object's chunk 0, the driver deletes that object's existing
 chunks before adding the batch through Weaviate's dynamic batch API. A batch with failed
